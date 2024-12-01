@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -5,11 +7,12 @@ import '../api/model/events.dart';
 import '../api/model/model.dart';
 import '../api/route/channels.dart';
 import '../widgets/compose_box.dart';
+import 'emoji.dart';
 import 'narrow.dart';
 import 'store.dart';
 
 extension ComposeContentAutocomplete on ComposeContentController {
-  AutocompleteIntent<MentionAutocompleteQuery>? autocompleteIntent() {
+  AutocompleteIntent<ComposeAutocompleteQuery>? autocompleteIntent() {
     if (!selection.isValid || !selection.isNormalized) {
       // We don't require [isCollapsed] to be true because we've seen that
       // autocorrect and even backspace involve programmatically expanding the
@@ -18,28 +21,52 @@ extension ComposeContentAutocomplete on ComposeContentController {
       // see below.
       return null;
     }
-    final textUntilCursor = text.substring(0, selection.end);
-    for (
-      int position = selection.end - 1;
-      position >= 0 && (selection.end - position <= 30);
-      position--
-    ) {
-      if (textUntilCursor[position] != '@') {
-        continue;
-      }
-      final match = mentionAutocompleteMarkerRegex.matchAsPrefix(textUntilCursor, position);
-      if (match == null) {
-        continue;
-      }
-      if (selection.start < position) {
-        // See comment about [TextSelection.isCollapsed] above.
-        return null;
-      }
-      return AutocompleteIntent(
-        syntaxStart: position,
-        query: MentionAutocompleteQuery(match[2]!, silent: match[1]! == '_'),
-        textEditingValue: value);
+
+    // To avoid spending a lot of time searching for autocomplete intents
+    // in long messages, we bound how far back we look for the intent's start.
+    final earliest = max(0, selection.end - 30);
+
+    if (selection.start < earliest) {
+      // The selection extends to before any position we'd consider
+      // for the start of the intent.  So there can't be a match.
+      return null;
     }
+
+    final textUntilCursor = text.substring(0, selection.end);
+    int pos;
+    for (pos = selection.end - 1; pos > selection.start; pos--) {
+      final charAtPos = textUntilCursor[pos];
+      if (charAtPos == '@') {
+        final match = _mentionIntentRegex.matchAsPrefix(textUntilCursor, pos);
+        if (match == null) continue;
+      } else if (charAtPos == ':') {
+        final match = _emojiIntentRegex.matchAsPrefix(textUntilCursor, pos);
+        if (match == null) continue;
+      } else {
+        continue;
+      }
+      // See comment about [TextSelection.isCollapsed] above.
+      return null;
+    }
+
+    for (; pos >= earliest; pos--) {
+      final charAtPos = textUntilCursor[pos];
+      final ComposeAutocompleteQuery query;
+      if (charAtPos == '@') {
+        final match = _mentionIntentRegex.matchAsPrefix(textUntilCursor, pos);
+        if (match == null) continue;
+        query = MentionAutocompleteQuery(match[2]!, silent: match[1]! == '_');
+      } else if (charAtPos == ':') {
+        final match = _emojiIntentRegex.matchAsPrefix(textUntilCursor, pos);
+        if (match == null) continue;
+        query = EmojiAutocompleteQuery(match[1]!);
+      } else {
+        continue;
+      }
+      return AutocompleteIntent(syntaxStart: pos, textEditingValue: value,
+        query: query);
+    }
+
     return null;
   }
 }
@@ -53,7 +80,7 @@ extension ComposeTopicAutocomplete on ComposeTopicController {
   }
 }
 
-final RegExp mentionAutocompleteMarkerRegex = (() {
+final RegExp _mentionIntentRegex = (() {
   // What's likely to come before an @-mention: the start of the string,
   // whitespace, or punctuation. Letters are unlikely; in that case an email
   // might be intended. (By punctuation, we mean *some* punctuation, like "(".
@@ -76,6 +103,60 @@ final RegExp mentionAutocompleteMarkerRegex = (() {
       + r'[^'   + fullNameAndEmailCharExclusions + r']*'
     + r')$',
     unicode: true);
+})();
+
+final RegExp _emojiIntentRegex = (() {
+  // Similar reasoning as in _mentionIntentRegex.
+  // Specifically forbid a preceding ":", though, to make "::" not a query.
+  const before = r'(?<=^|\s|\p{Punctuation})(?<!:)';
+  // TODO(dart-future): Regexps in ES 2024 have a /v aka unicodeSets flag;
+  //   if Dart matches that, we could combine into one character class
+  //   meaning "whitespace and punctuation, except not `:`":
+  //     r'(?<=^|[[\s\p{Punctuation}]--[:]])'
+
+  // What possible emoji queries do we want to anticipate?
+  //
+  // First, look only for queries aimed at emoji names (and aliases);
+  // there's little point in searching by literal emoji here, because once the
+  // user has entered a literal emoji they can simply leave it in.
+  // (Searching by literal emoji is useful, by contrast, for adding a reaction.)
+  //
+  // Then, what are the possible names (including aliases)?
+  // For custom emoji, the names the server allows are r'^[0-9a-z_-]*[0-9a-z]$';
+  // see check_valid_emoji_name in zerver/lib/emoji.py.
+  // So only ASCII lowercase alnum, underscore, and dash.
+  // A few Unicode emoji have more general names in the server's list:
+  // Latin letters with diacritics, a few kana and kanji, and the name "+1".
+  // (And the only "Zulip extra emoji" has one name, "zulip".)
+  // Details: https://github.com/zulip/zulip-flutter/pull/1069#discussion_r1855964953
+  //
+  // We generalize [0-9a-z] to "any letter or number".
+  // That handles the existing names except "+1", plus a potential future
+  // loosening of the constraints on custom emoji's names.
+  //
+  // Then "+1" we take as a special case, without generalizing,
+  // in order to recognize that name without adding false positives.
+  //
+  // Even though there could be a custom emoji whose name begins with "-",
+  // we reject queries that begin that way: ":-" is much more likely to be
+  // the start of an emoticon.
+
+  /// Characters that might be meant as part of (a query for) an emoji's name
+  /// at any point in the query.
+  const nameCharacters = r'_\p{Letter}\p{Number}';
+
+  return RegExp(unicode: true,
+    before
+    + r':'
+    + r'(|'
+      // Recognize '+' only as part of '+1', the only emoji name that has it.
+      + r'\+1?|'
+      // Reject on whitespace right after ':'; interpret that
+      // as the user choosing to get out of the emoji autocomplete.
+      // Similarly reject starting with ':-', which is common for emoticons.
+      + r'['    + nameCharacters + r']'
+      + r'[-\s' + nameCharacters + r']*'
+    + r')$');
 })();
 
 /// The text controller's recognition that the user might want autocomplete UI.
@@ -123,6 +204,7 @@ class AutocompleteIntent<QueryT extends AutocompleteQuery> {
 class AutocompleteViewManager {
   final Set<MentionAutocompleteView> _mentionAutocompleteViews = {};
   final Set<TopicAutocompleteView> _topicAutocompleteViews = {};
+  final Set<EmojiAutocompleteView> _emojiAutocompleteViews = {};
 
   AutocompleteDataCache autocompleteDataCache = AutocompleteDataCache();
 
@@ -143,6 +225,16 @@ class AutocompleteViewManager {
 
   void unregisterTopicAutocomplete(TopicAutocompleteView view) {
     final removed = _topicAutocompleteViews.remove(view);
+    assert(removed);
+  }
+
+  void registerEmojiAutocomplete(EmojiAutocompleteView view) {
+    final added = _emojiAutocompleteViews.add(view);
+    assert(added);
+  }
+
+  void unregisterEmojiAutocomplete(EmojiAutocompleteView view) {
+    final removed = _emojiAutocompleteViews.remove(view);
     assert(removed);
   }
 
@@ -177,39 +269,71 @@ class AutocompleteViewManager {
 
 /// A view-model for an autocomplete interaction.
 ///
+/// Subclasses correspond to subclasses of [AutocompleteQuery],
+/// i.e. different types of autocomplete interaction initiated by the user.
+/// Each subclass specifies the corresponding [AutocompleteQuery] subclass
+/// as `QueryT`,
+/// and the [AutocompleteResult] subclass in `ResultT` describes the
+/// possible results that the user might choose in the autocomplete interaction.
+///
+/// When an [AutocompleteView] is created, its constructor begins the search
+/// for results corresponding to the initial [query].
+/// The query may later be updated, causing a new search.
+///
 /// The owner of one of these objects must call [dispose] when the object
 /// will no longer be used, in order to free resources on the [PerAccountStore].
 ///
 /// Lifecycle:
-///  * Create an instance of a concrete subtype.
+///  * Create an instance of a concrete subtype, beginning a search
 ///  * Add listeners with [addListener].
-///  * Use the [query] setter to start a search for a query.
+///  * When the user edits the query, use the [query] setter to update the search.
 ///  * On reassemble, call [reassemble].
 ///  * When the object will no longer be used, call [dispose] to free
 ///    resources on the [PerAccountStore].
 abstract class AutocompleteView<QueryT extends AutocompleteQuery, ResultT extends AutocompleteResult> extends ChangeNotifier {
-  AutocompleteView({required this.store});
+  /// Construct a view-model for an autocomplete interaction,
+  /// and begin the search for the initial query.
+  AutocompleteView({required this.store, required QueryT query})
+      : _query = query {
+    _startSearch();
+  }
 
   final PerAccountStore store;
 
-  QueryT? get query => _query;
-  QueryT? _query;
-  set query(QueryT? query) {
+  /// True just if this [AutocompleteView] is of the appropriate type
+  /// to handle the given query.
+  bool acceptsQuery(AutocompleteQuery query) => query is QueryT;
+
+  /// The last query this [AutocompleteView] was asked to perform for the user.
+  ///
+  /// If this view-model is currently performing a search,
+  /// the search is for this query.
+  /// If not, then [results] reflect this query.
+  ///
+  /// When set, the existing query is aborted if still in progress,
+  /// and a search for the new query is begun.
+  /// Any existing value in [results] remains until the new query finishes.
+  QueryT get query => _query;
+  QueryT _query;
+  set query(QueryT query) {
     _query = query;
-    if (query != null) {
-      _startSearch();
-    }
+    _startSearch();
   }
 
   /// Called when the app is reassembled during debugging, e.g. for hot reload.
   ///
   /// This will redo the search from scratch for the current query, if any.
   void reassemble() {
-    if (_query != null) {
-      _startSearch();
-    }
+    _startSearch();
   }
 
+  /// The latest set of results available for any value of [query].
+  ///
+  /// When this changes, listeners will be notified with [notifyListeners].
+  ///
+  /// These results might not correspond to the current value of [query],
+  /// if a search is still in progress.
+  /// Before any search completes, [results] will be empty.
   Iterable<ResultT> get results => _results;
   List<ResultT> _results = [];
 
@@ -264,8 +388,7 @@ abstract class AutocompleteView<QueryT extends AutocompleteQuery, ResultT extend
     required Iterable<T> candidates,
     required List<ResultT> results,
   }) async {
-    assert(_query != null);
-    final query = _query!;
+    final query = _query;
 
     final iterator = candidates.iterator;
     outer: while (true) {
@@ -284,9 +407,16 @@ abstract class AutocompleteView<QueryT extends AutocompleteQuery, ResultT extend
   }
 }
 
+/// An [AutocompleteView] for an autocomplete interaction
+/// in the compose box's content input.
+typedef ComposeAutocompleteView = AutocompleteView<ComposeAutocompleteQuery, ComposeAutocompleteResult>;
+
+/// An [AutocompleteView] for an @-mention autocomplete interaction,
+/// an example of a [ComposeAutocompleteView].
 class MentionAutocompleteView extends AutocompleteView<MentionAutocompleteQuery, MentionAutocompleteResult> {
   MentionAutocompleteView._({
     required super.store,
+    required super.query,
     required this.narrow,
     required this.sortedUsers,
   });
@@ -294,9 +424,11 @@ class MentionAutocompleteView extends AutocompleteView<MentionAutocompleteQuery,
   factory MentionAutocompleteView.init({
     required PerAccountStore store,
     required Narrow narrow,
+    required MentionAutocompleteQuery query,
   }) {
     final view = MentionAutocompleteView._(
       store: store,
+      query: query,
       narrow: narrow,
       sortedUsers: _usersByRelevance(store: store, narrow: narrow),
     );
@@ -493,11 +625,29 @@ class MentionAutocompleteView extends AutocompleteView<MentionAutocompleteQuery,
   }
 }
 
+/// A query the user has entered into some form of autocomplete.
+///
+/// Subclasses correspond to different types of autocomplete interaction
+/// initiated by the user:
+/// for example typing `@` into a compose box's content input
+/// to autocomplete an @-mention ([MentionAutocompleteQuery]),
+/// or typing into a topic input
+/// to autocomplete a topic name ([TopicAutocompleteQuery]).
+/// Each subclass has a corresponding subclass of [AutocompleteView].
+///
+/// An [AutocompleteQuery] object stores the user's actual query string
+/// as [raw].
+/// It may also store processed forms of the query
+/// (for example, converted to lowercase or split on whitespace)
+/// to prepare for whatever particular form of searching will be done
+/// for the given type of autocomplete interaction.
 abstract class AutocompleteQuery {
   AutocompleteQuery(this.raw)
     : _lowercaseWords = raw.toLowerCase().split(' ');
 
+  /// The actual string the user entered.
   final String raw;
+
   final List<String> _lowercaseWords;
 
   /// Whether all of this query's words have matches in [words] that appear in order.
@@ -523,11 +673,26 @@ abstract class AutocompleteQuery {
   }
 }
 
-class MentionAutocompleteQuery extends AutocompleteQuery {
+/// Any autocomplete query in the compose box's content input.
+abstract class ComposeAutocompleteQuery extends AutocompleteQuery {
+  ComposeAutocompleteQuery(super.raw);
+
+  /// Construct an [AutocompleteView] initialized with this query
+  /// and ready to handle queries of the same type.
+  ComposeAutocompleteView initViewModel(PerAccountStore store, Narrow narrow);
+}
+
+/// A @-mention autocomplete query, used by [MentionAutocompleteView].
+class MentionAutocompleteQuery extends ComposeAutocompleteQuery {
   MentionAutocompleteQuery(super.raw, {this.silent = false});
 
   /// Whether the user wants a silent mention (@_query, vs. @query).
   final bool silent;
+
+  @override
+  MentionAutocompleteView initViewModel(PerAccountStore store, Narrow narrow) {
+    return MentionAutocompleteView.init(store: store, narrow: narrow, query: this);
+  }
 
   bool testUser(User user, AutocompleteDataCache cache) {
     // TODO(#236) test email too, not just name
@@ -555,6 +720,10 @@ class MentionAutocompleteQuery extends AutocompleteQuery {
   int get hashCode => Object.hash('MentionAutocompleteQuery', raw, silent);
 }
 
+/// Cached data that is used for autocomplete
+/// but kept around in between autocomplete interactions.
+///
+/// An instance of this class is managed by [AutocompleteViewManager].
 class AutocompleteDataCache {
   final Map<int, String> _normalizedNamesByUser = {};
 
@@ -575,10 +744,34 @@ class AutocompleteDataCache {
   }
 }
 
+/// A result the user chose, or might choose, from an autocomplete interaction.
+///
+/// Different subclasses of [AutocompleteView],
+/// representing different types of autocomplete interaction,
+/// have corresponding subclasses of [AutocompleteResult] they might produce.
 class AutocompleteResult {}
 
-sealed class MentionAutocompleteResult extends AutocompleteResult {}
+/// A result from some autocomplete interaction in
+/// the compose box's content input, initiated by a [ComposeAutocompleteQuery]
+/// and managed by some [ComposeAutocompleteView].
+sealed class ComposeAutocompleteResult extends AutocompleteResult {}
 
+/// An emoji chosen in an autocomplete interaction, via [EmojiAutocompleteView].
+class EmojiAutocompleteResult extends ComposeAutocompleteResult {
+  EmojiAutocompleteResult(this.candidate);
+
+  final EmojiCandidate candidate;
+}
+
+/// A result from an @-mention autocomplete interaction,
+/// managed by a [MentionAutocompleteView].
+///
+/// This is abstract because there are several kinds of result
+/// that can all be offered in the same @-mention autocomplete interaction:
+/// a user, a wildcard, or a user group.
+sealed class MentionAutocompleteResult extends ComposeAutocompleteResult {}
+
+/// An autocomplete result for an @-mention of an individual user.
 class UserMentionAutocompleteResult extends MentionAutocompleteResult {
   UserMentionAutocompleteResult({required this.userId});
 
@@ -589,17 +782,29 @@ class UserMentionAutocompleteResult extends MentionAutocompleteResult {
 
 // TODO(#234): // class WildcardMentionAutocompleteResult extends MentionAutocompleteResult {
 
+/// An autocomplete interaction for choosing a topic for a message.
 class TopicAutocompleteView extends AutocompleteView<TopicAutocompleteQuery, TopicAutocompleteResult> {
-  TopicAutocompleteView._({required super.store, required this.streamId});
+  TopicAutocompleteView._({
+    required super.store,
+    required super.query,
+    required this.streamId,
+  });
 
-  factory TopicAutocompleteView.init({required PerAccountStore store, required int streamId}) {
-    final view = TopicAutocompleteView._(store: store, streamId: streamId);
+  factory TopicAutocompleteView.init({
+    required PerAccountStore store,
+    required int streamId,
+    required TopicAutocompleteQuery query,
+  }) {
+    final view = TopicAutocompleteView._(
+      store: store, streamId: streamId, query: query);
     store.autocompleteViewManager.registerTopicAutocomplete(view);
     view._fetch();
     return view;
   }
 
+  /// The channel/stream the eventual message will be sent to.
   final int streamId;
+
   Iterable<String> _topics = [];
   bool _isFetching = false;
 
@@ -615,7 +820,7 @@ class TopicAutocompleteView extends AutocompleteView<TopicAutocompleteQuery, Top
     final result = await getStreamTopics(store.connection, streamId: streamId);
     _topics = result.topics.map((e) => e.name);
     _isFetching = false;
-    if (_query != null) return _startSearch();
+    return _startSearch();
   }
 
   @override
@@ -642,6 +847,8 @@ class TopicAutocompleteView extends AutocompleteView<TopicAutocompleteQuery, Top
   }
 }
 
+/// A query for autocompleting a topic to send to,
+/// used by [TopicAutocompleteView].
 class TopicAutocompleteQuery extends AutocompleteQuery {
   TopicAutocompleteQuery(super.raw);
 
@@ -664,6 +871,7 @@ class TopicAutocompleteQuery extends AutocompleteQuery {
   int get hashCode => Object.hash('TopicAutocompleteQuery', raw);
 }
 
+/// A topic chosen in an autocomplete interaction, via a [TopicAutocompleteView].
 class TopicAutocompleteResult extends AutocompleteResult {
   final String topic;
 

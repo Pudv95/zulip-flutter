@@ -342,18 +342,10 @@ class ZulipStream {
   ChannelPostPolicy channelPostPolicy;
   // final bool isAnnouncementOnly; // deprecated for `channelPostPolicy`; ignore
 
-  // TODO(server-6): `canRemoveSubscribersGroupId` added in FL 142
-  // TODO(server-8): in FL 197 renamed to `canRemoveSubscribersGroup`
-  @JsonKey(readValue: _readCanRemoveSubscribersGroup)
-  int? canRemoveSubscribersGroup;
+  // GroupSettingsValue canRemoveSubscribersGroup; // TODO(#814)
 
   // TODO(server-8): added in FL 199, was previously only on [Subscription] objects
   int? streamWeeklyTraffic;
-
-  static int? _readCanRemoveSubscribersGroup(Map<dynamic, dynamic> json, String key) {
-    return (json[key] as int?)
-      ?? (json['can_remove_subscribers_group_id'] as int?);
-  }
 
   ZulipStream({
     required this.streamId,
@@ -367,7 +359,6 @@ class ZulipStream {
     required this.historyPublicToSubscribers,
     required this.messageRetentionDays,
     required this.channelPostPolicy,
-    required this.canRemoveSubscribersGroup,
     required this.streamWeeklyTraffic,
   });
 
@@ -397,8 +388,8 @@ enum ChannelPropertyName {
   messageRetentionDays,
   @JsonValue('stream_post_policy')
   channelPostPolicy,
-  canRemoveSubscribersGroup,
-  canRemoveSubscribersGroupId, // TODO(server-8): remove, replaced by canRemoveSubscribersGroup
+  // canRemoveSubscribersGroup, // TODO(#814)
+  // canRemoveSubscribersGroupId, // TODO(#814) handle // TODO(server-8) remove
   streamWeeklyTraffic;
 
   /// Get a [ChannelPropertyName] from a raw, snake-case string we recognize, else null.
@@ -478,7 +469,6 @@ class Subscription extends ZulipStream {
     required super.historyPublicToSubscribers,
     required super.messageRetentionDays,
     required super.channelPostPolicy,
-    required super.canRemoveSubscribersGroup,
     required super.streamWeeklyTraffic,
     required this.desktopNotifications,
     required this.emailNotifications,

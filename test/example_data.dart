@@ -212,7 +212,6 @@ ZulipStream stream({
   bool? historyPublicToSubscribers,
   int? messageRetentionDays,
   ChannelPostPolicy? channelPostPolicy,
-  int? canRemoveSubscribersGroup,
   int? streamWeeklyTraffic,
 }) {
   _checkPositive(streamId, 'stream ID');
@@ -232,7 +231,6 @@ ZulipStream stream({
     historyPublicToSubscribers: historyPublicToSubscribers ?? true,
     messageRetentionDays: messageRetentionDays,
     channelPostPolicy: channelPostPolicy ?? ChannelPostPolicy.any,
-    canRemoveSubscribersGroup: canRemoveSubscribersGroup ?? 123,
     streamWeeklyTraffic: streamWeeklyTraffic,
   );
 }
@@ -270,7 +268,6 @@ Subscription subscription(
     historyPublicToSubscribers: stream.historyPublicToSubscribers,
     messageRetentionDays: stream.messageRetentionDays,
     channelPostPolicy: stream.channelPostPolicy,
-    canRemoveSubscribersGroup: stream.canRemoveSubscribersGroup,
     streamWeeklyTraffic: stream.streamWeeklyTraffic,
     desktopNotifications: desktopNotifications ?? false,
     emailNotifications: emailNotifications ?? false,
@@ -789,8 +786,6 @@ ChannelUpdateEvent channelUpdateEvent(
       assert(value is int?);
     case ChannelPropertyName.channelPostPolicy:
       assert(value is ChannelPostPolicy);
-    case ChannelPropertyName.canRemoveSubscribersGroup:
-    case ChannelPropertyName.canRemoveSubscribersGroupId:
     case ChannelPropertyName.streamWeeklyTraffic:
       assert(value is int?);
   }

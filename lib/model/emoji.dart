@@ -1,7 +1,13 @@
+import 'package:collection/collection.dart';
+import 'package:flutter/foundation.dart';
+
 import '../api/model/events.dart';
 import '../api/model/initial_snapshot.dart';
 import '../api/model/model.dart';
 import '../api/route/realm.dart';
+import 'autocomplete.dart';
+import 'narrow.dart';
+import 'store.dart';
 
 /// An emoji, described by how to display it in the UI.
 sealed class EmojiDisplay {
@@ -51,6 +57,37 @@ class TextEmojiDisplay extends EmojiDisplay {
   TextEmojiDisplay({required super.emojiName});
 }
 
+/// An emoji that might be offered in an emoji picker UI.
+final class EmojiCandidate {
+  /// The Zulip "emoji type" for this emoji.
+  final ReactionType emojiType;
+
+  /// The Zulip "emoji code" for this emoji.
+  ///
+  /// This is the value that would appear in [Reaction.emojiCode].
+  final String emojiCode;
+
+  /// The Zulip "emoji name" to use for this emoji.
+  ///
+  /// This might not be the only name this emoji has; see [aliases].
+  final String emojiName;
+
+  /// Additional Zulip "emoji name" values for this emoji,
+  /// to show in the emoji picker UI.
+  Iterable<String> get aliases => _aliases ?? const [];
+  final List<String>? _aliases;
+
+  final EmojiDisplay emojiDisplay;
+
+  EmojiCandidate({
+    required this.emojiType,
+    required this.emojiCode,
+    required this.emojiName,
+    required List<String>? aliases,
+    required this.emojiDisplay,
+  }) : _aliases = aliases;
+}
+
 /// The portion of [PerAccountStore] describing what emoji exist.
 mixin EmojiStore {
   /// The realm's custom emoji (for [ReactionType.realmEmoji],
@@ -62,6 +99,8 @@ mixin EmojiStore {
     required String emojiCode,
     required String emojiName,
   });
+
+  Iterable<EmojiCandidate> allEmojiCandidates();
 
   // TODO cut debugServerEmojiData once we can query for lists of emoji;
   //   have tests make those queries end-to-end
@@ -148,12 +187,168 @@ class EmojiStoreImpl with EmojiStore {
   /// retrieving the data.
   Map<String, List<String>>? _serverEmojiData;
 
+  List<EmojiCandidate>? _allEmojiCandidates;
+
+  EmojiCandidate _emojiCandidateFor({
+    required ReactionType emojiType,
+    required String emojiCode,
+    required String emojiName,
+    required List<String>? aliases,
+  }) {
+    return EmojiCandidate(
+      emojiType: emojiType, emojiCode: emojiCode, emojiName: emojiName,
+      aliases: aliases,
+      emojiDisplay: emojiDisplayFor(
+        emojiType: emojiType, emojiCode: emojiCode, emojiName: emojiName));
+  }
+
+  List<EmojiCandidate> _generateAllCandidates() {
+    final results = <EmojiCandidate>[];
+
+    final namesOverridden = {
+      for (final emoji in realmEmoji.values) emoji.name,
+      'zulip',
+    };
+    // TODO(log) if _serverEmojiData missing
+    for (final entry in (_serverEmojiData ?? {}).entries) {
+      final allNames = entry.value;
+      final String emojiName;
+      final List<String>? aliases;
+      if (allNames.any(namesOverridden.contains)) {
+        final names = allNames.whereNot(namesOverridden.contains).toList();
+        if (names.isEmpty) continue;
+        emojiName = names.removeAt(0);
+        aliases = names;
+      } else {
+        // Most emoji aren't overridden, so avoid copying the list.
+        emojiName = allNames.first;
+        aliases = allNames.length > 1 ? allNames.sublist(1) : null;
+      }
+      results.add(_emojiCandidateFor(
+        emojiType: ReactionType.unicodeEmoji,
+        emojiCode: entry.key, emojiName: emojiName,
+        aliases: aliases));
+    }
+
+    for (final entry in realmEmoji.entries) {
+      final emojiName = entry.value.name;
+      if (emojiName == 'zulip') {
+        // TODO does 'zulip' really override realm emoji?
+        //   (This is copied from zulip-mobile's behavior.)
+        continue;
+      }
+      results.add(_emojiCandidateFor(
+        emojiType: ReactionType.realmEmoji,
+        emojiCode: entry.key, emojiName: emojiName,
+        aliases: null));
+    }
+
+    results.add(_emojiCandidateFor(
+      emojiType: ReactionType.zulipExtraEmoji,
+      emojiCode: 'zulip', emojiName: 'zulip',
+      aliases: null));
+
+    return results;
+  }
+
+  @override
+  Iterable<EmojiCandidate> allEmojiCandidates() {
+    return _allEmojiCandidates ??= _generateAllCandidates();
+  }
+
   @override
   void setServerEmojiData(ServerEmojiData data) {
     _serverEmojiData = data.codeToNames;
+    _allEmojiCandidates = null;
   }
 
   void handleRealmEmojiUpdateEvent(RealmEmojiUpdateEvent event) {
     realmEmoji = event.realmEmoji;
+    _allEmojiCandidates = null;
   }
+}
+
+class EmojiAutocompleteView extends AutocompleteView<EmojiAutocompleteQuery, EmojiAutocompleteResult> {
+  EmojiAutocompleteView._({required super.store, required super.query});
+
+  factory EmojiAutocompleteView.init({
+    required PerAccountStore store,
+    required EmojiAutocompleteQuery query,
+  }) {
+    final view = EmojiAutocompleteView._(store: store, query: query);
+    store.autocompleteViewManager.registerEmojiAutocomplete(view);
+    return view;
+  }
+
+  @override
+  Future<List<EmojiAutocompleteResult>?> computeResults() async {
+    // TODO(#1068): rank emoji results (popular, realm, other; exact match, prefix, other)
+    final results = <EmojiAutocompleteResult>[];
+    if (await filterCandidates(filter: _testCandidate,
+          candidates: store.allEmojiCandidates(), results: results)) {
+      return null;
+    }
+    return results;
+  }
+
+  EmojiAutocompleteResult? _testCandidate(EmojiAutocompleteQuery query, EmojiCandidate candidate) {
+    return query.matches(candidate) ? EmojiAutocompleteResult(candidate) : null;
+  }
+}
+
+class EmojiAutocompleteQuery extends ComposeAutocompleteQuery {
+  EmojiAutocompleteQuery(super.raw)
+    : _adjusted = _adjustQuery(raw);
+
+  final String _adjusted;
+
+  static String _adjustQuery(String raw) {
+    return raw.toLowerCase().replaceAll(' ', '_'); // TODO(#1067) remove diacritics too
+  }
+
+  @override
+  EmojiAutocompleteView initViewModel(PerAccountStore store, Narrow narrow) {
+    return EmojiAutocompleteView.init(store: store, query: this);
+  }
+
+  // Compare get_emoji_matcher in Zulip web:shared/src/typeahead.ts .
+  bool matches(EmojiCandidate candidate) {
+    if (candidate.emojiDisplay case UnicodeEmojiDisplay(:var emojiUnicode)) {
+      if (_adjusted == emojiUnicode) return true;
+    }
+    return _nameMatches(candidate.emojiName)
+      || candidate.aliases.any((alias) => _nameMatches(alias));
+  }
+
+  // Compare query_matches_string_in_order in Zulip web:shared/src/typeahead.ts .
+  bool _nameMatches(String emojiName) {
+    // TODO(#1067) this assumes emojiName is already lower-case (and no diacritics)
+    const String separator = '_';
+
+    if (!_adjusted.contains(separator)) {
+      // If the query is a single token (doesn't contain a separator),
+      // the match can be anywhere in the string.
+      return emojiName.contains(_adjusted);
+    }
+
+    // If there is a separator in the query, then we
+    // require the match to start at the start of a token.
+    // (E.g. for 'ab_cd_ef', query could be 'ab_c' or 'cd_ef',
+    // but not 'b_cd_ef'.)
+    return emojiName.startsWith(_adjusted)
+      || emojiName.contains(separator + _adjusted);
+  }
+
+  @override
+  String toString() {
+    return '${objectRuntimeType(this, 'EmojiAutocompleteQuery')}($raw)';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is EmojiAutocompleteQuery && other.raw == raw;
+  }
+
+  @override
+  int get hashCode => Object.hash('EmojiAutocompleteQuery', raw);
 }

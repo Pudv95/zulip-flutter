@@ -279,9 +279,6 @@ class ChannelStoreImpl with ChannelStore {
             stream.messageRetentionDays = event.value as int?;
           case ChannelPropertyName.channelPostPolicy:
             stream.channelPostPolicy = event.value as ChannelPostPolicy;
-          case ChannelPropertyName.canRemoveSubscribersGroup:
-          case ChannelPropertyName.canRemoveSubscribersGroupId:
-            stream.canRemoveSubscribersGroup = event.value as int?;
           case ChannelPropertyName.streamWeeklyTraffic:
             stream.streamWeeklyTraffic = event.value as int?;
         }

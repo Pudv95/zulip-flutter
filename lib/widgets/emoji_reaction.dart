@@ -1,11 +1,10 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../api/model/model.dart';
 import '../api/route/messages.dart';
 import '../model/emoji.dart';
 import 'color.dart';
-import 'content.dart';
+import 'emoji.dart';
 import 'store.dart';
 import 'text.dart';
 
@@ -183,7 +182,7 @@ class ReactionChip extends StatelessWidget {
 
     final emoji = switch (emojiDisplay) {
       UnicodeEmojiDisplay() => _UnicodeEmoji(
-        emojiDisplay: emojiDisplay, selected: selfVoted),
+        emojiDisplay: emojiDisplay),
       ImageEmojiDisplay() => _ImageEmoji(
         emojiDisplay: emojiDisplay, emojiName: emojiName, selected: selfVoted),
       TextEmojiDisplay() => _TextEmoji(
@@ -294,57 +293,17 @@ TextScaler _labelTextScalerClamped(BuildContext context) =>
   MediaQuery.textScalerOf(context).clamp(maxScaleFactor: 2);
 
 class _UnicodeEmoji extends StatelessWidget {
-  const _UnicodeEmoji({
-    required this.emojiDisplay,
-    required this.selected,
-  });
+  const _UnicodeEmoji({required this.emojiDisplay});
 
   final UnicodeEmojiDisplay emojiDisplay;
-  final bool selected;
 
   @override
   Widget build(BuildContext context) {
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.android:
-      case TargetPlatform.fuchsia:
-      case TargetPlatform.linux:
-      case TargetPlatform.windows:
-        return Text(
-          textScaler: _squareEmojiScalerClamped(context),
-          style: const TextStyle(
-            fontFamily: 'Noto Color Emoji',
-            fontSize: _notoColorEmojiTextSize,
-          ),
-          strutStyle: const StrutStyle(fontSize: _notoColorEmojiTextSize, forceStrutHeight: true),
-          emojiDisplay.emojiUnicode);
-      case TargetPlatform.iOS:
-      case TargetPlatform.macOS:
-        // We expect the font "Apple Color Emoji" to be used. There are some
-        // surprises in how Flutter ends up rendering emojis in this font:
-        // - With a font size of 17px, the emoji visually seems to be about 17px
-        //   square. (Unlike on Android, with Noto Color Emoji, where a 14.5px font
-        //   size gives an emoji that looks 17px square.) See:
-        //     <https://github.com/flutter/flutter/issues/28894>
-        // - The emoji doesn't fill the space taken by the [Text] in the layout.
-        //   There's whitespace above, below, and on the right. See:
-        //     <https://github.com/flutter/flutter/issues/119623>
-        //
-        // That extra space would be problematic, except we've used a [Stack] to
-        // make the [Text] "positioned" so the space doesn't add margins around the
-        // visible part. Key points that enable the [Stack] workaround:
-        // - The emoji seems approximately vertically centered (this is
-        //   accomplished with help from a [StrutStyle]; see below).
-        // - There seems to be approximately no space on its left.
-        final boxSize = _squareEmojiScalerClamped(context).scale(_squareEmojiSize);
-        return Stack(alignment: Alignment.centerLeft, clipBehavior: Clip.none, children: [
-          SizedBox(height: boxSize, width: boxSize),
-          PositionedDirectional(start: 0, child: Text(
-            textScaler: _squareEmojiScalerClamped(context),
-            style: const TextStyle(fontSize: _squareEmojiSize),
-            strutStyle: const StrutStyle(fontSize: _squareEmojiSize, forceStrutHeight: true),
-            emojiDisplay.emojiUnicode)),
-        ]);
-    }
+    return UnicodeEmojiWidget(
+      size: _squareEmojiSize,
+      notoColorEmojiTextSize: _notoColorEmojiTextSize,
+      textScaler: _squareEmojiScalerClamped(context),
+      emojiDisplay: emojiDisplay);
   }
 }
 
@@ -361,29 +320,11 @@ class _ImageEmoji extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Some people really dislike animated emoji.
-    final doNotAnimate =
-      // From reading code, this doesn't actually get set on iOS:
-      //   https://github.com/zulip/zulip-flutter/pull/410#discussion_r1408522293
-      MediaQuery.disableAnimationsOf(context)
-      || (defaultTargetPlatform == TargetPlatform.iOS
-        // TODO(upstream) On iOS 17+ (new in 2023), there's a more closely
-        //   relevant setting than "reduce motion". It's called "auto-play
-        //   animated images", and we should file an issue to expose it.
-        //   See GitHub comment linked above.
-        && WidgetsBinding.instance.platformDispatcher.accessibilityFeatures.reduceMotion);
-
-    final resolvedUrl = doNotAnimate
-      ? (emojiDisplay.resolvedStillUrl ?? emojiDisplay.resolvedUrl)
-      : emojiDisplay.resolvedUrl;
-
-    // Unicode and text emoji get scaled; it would look weird if image emoji didn't.
-    final size = _squareEmojiScalerClamped(context).scale(_squareEmojiSize);
-
-    return RealmContentNetworkImage(
-      resolvedUrl,
-      width: size,
-      height: size,
+    return ImageEmojiWidget(
+      size: _squareEmojiSize,
+      // Unicode and text emoji get scaled; it would look weird if image emoji didn't.
+      textScaler: _squareEmojiScalerClamped(context),
+      emojiDisplay: emojiDisplay,
       errorBuilder: (context, _, __) => _TextEmoji(
         emojiDisplay: TextEmojiDisplay(emojiName: emojiName), selected: selected),
     );

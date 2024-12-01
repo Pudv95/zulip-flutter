@@ -2,19 +2,20 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:checks/checks.dart';
-import 'package:fake_async/fake_async.dart';
 import 'package:flutter/widgets.dart';
 import 'package:test/scaffolding.dart';
 import 'package:zulip/api/model/initial_snapshot.dart';
 import 'package:zulip/api/model/model.dart';
 import 'package:zulip/api/route/channels.dart';
 import 'package:zulip/model/autocomplete.dart';
+import 'package:zulip/model/emoji.dart';
 import 'package:zulip/model/narrow.dart';
 import 'package:zulip/model/store.dart';
 import 'package:zulip/widgets/compose_box.dart';
 
 import '../api/fake_api.dart';
 import '../example_data.dart' as eg;
+import '../fake_async.dart';
 import 'test_store.dart';
 import 'autocomplete_checks.dart';
 
@@ -68,7 +69,7 @@ void main() {
     ///
     /// For example, "~@chris^" means the text is "@chris", the selection is
     /// collapsed at index 6, and we expect the syntax to start at index 0.
-    void doTest(String markedText, MentionAutocompleteQuery? expectedQuery) {
+    void doTest(String markedText, ComposeAutocompleteQuery? expectedQuery) {
       final description = expectedQuery != null
         ? 'in ${jsonEncode(markedText)}, query ${jsonEncode(expectedQuery.raw)}'
         : 'no query in ${jsonEncode(markedText)}';
@@ -87,13 +88,16 @@ void main() {
       });
     }
 
-    MentionAutocompleteQuery queryOf(String raw) => MentionAutocompleteQuery(raw, silent: false);
-    MentionAutocompleteQuery silentQueryOf(String raw) => MentionAutocompleteQuery(raw, silent: true);
+    MentionAutocompleteQuery mention(String raw) => MentionAutocompleteQuery(raw, silent: false);
+    MentionAutocompleteQuery silentMention(String raw) => MentionAutocompleteQuery(raw, silent: true);
+    EmojiAutocompleteQuery emoji(String raw) => EmojiAutocompleteQuery(raw);
 
     doTest('', null);
     doTest('^', null);
 
     doTest('!@#\$%&*()_+', null);
+
+    // @-mentions.
 
     doTest('^@', null);                doTest('^@_', null);
     doTest('^@abc', null);             doTest('^@_abc', null);
@@ -125,61 +129,139 @@ void main() {
 
     doTest('`@chris^', null); doTest('`@_chris^', null);
 
-    doTest('~@^_', queryOf('')); // Odd/unlikely, but should not crash
+    doTest('~@^_', mention('')); // Odd/unlikely, but should not crash
 
-    doTest('~@__^', silentQueryOf('_'));
+    doTest('~@__^', silentMention('_'));
 
-    doTest('~@^abc^', queryOf('abc')); doTest('~@_^abc^', silentQueryOf('abc'));
-    doTest('~@a^bc^', queryOf('abc')); doTest('~@_a^bc^', silentQueryOf('abc'));
-    doTest('~@ab^c^', queryOf('abc')); doTest('~@_ab^c^', silentQueryOf('abc'));
-    doTest('~^@^', queryOf(''));       doTest('~^@_^', silentQueryOf(''));
+    doTest('~@^abc^', mention('abc')); doTest('~@_^abc^', silentMention('abc'));
+    doTest('~@a^bc^', mention('abc')); doTest('~@_a^bc^', silentMention('abc'));
+    doTest('~@ab^c^', mention('abc')); doTest('~@_ab^c^', silentMention('abc'));
+    doTest('~^@^', mention(''));       doTest('~^@_^', silentMention(''));
     // but:
     doTest('^hello @chris^', null);    doTest('^hello @_chris^', null);
 
-    doTest('~@me@zulip.com^', queryOf('me@zulip.com'));  doTest('~@_me@zulip.com^', silentQueryOf('me@zulip.com'));
-    doTest('~@me@^zulip.com^', queryOf('me@zulip.com')); doTest('~@_me@^zulip.com^', silentQueryOf('me@zulip.com'));
-    doTest('~@me^@zulip.com^', queryOf('me@zulip.com')); doTest('~@_me^@zulip.com^', silentQueryOf('me@zulip.com'));
-    doTest('~@^me@zulip.com^', queryOf('me@zulip.com')); doTest('~@_^me@zulip.com^', silentQueryOf('me@zulip.com'));
+    doTest('~@me@zulip.com^', mention('me@zulip.com'));  doTest('~@_me@zulip.com^', silentMention('me@zulip.com'));
+    doTest('~@me@^zulip.com^', mention('me@zulip.com')); doTest('~@_me@^zulip.com^', silentMention('me@zulip.com'));
+    doTest('~@me^@zulip.com^', mention('me@zulip.com')); doTest('~@_me^@zulip.com^', silentMention('me@zulip.com'));
+    doTest('~@^me@zulip.com^', mention('me@zulip.com')); doTest('~@_^me@zulip.com^', silentMention('me@zulip.com'));
 
-    doTest('~@abc^', queryOf('abc'));   doTest('~@_abc^', silentQueryOf('abc'));
-    doTest(' ~@abc^', queryOf('abc'));  doTest(' ~@_abc^', silentQueryOf('abc'));
-    doTest('(~@abc^', queryOf('abc'));  doTest('(~@_abc^', silentQueryOf('abc'));
-    doTest('—~@abc^', queryOf('abc'));  doTest('—~@_abc^', silentQueryOf('abc'));
-    doTest('"~@abc^', queryOf('abc'));  doTest('"~@_abc^', silentQueryOf('abc'));
-    doTest('“~@abc^', queryOf('abc'));  doTest('“~@_abc^', silentQueryOf('abc'));
-    doTest('。~@abc^', queryOf('abc')); doTest('。~@_abc^', silentQueryOf('abc'));
-    doTest('«~@abc^', queryOf('abc'));  doTest('«~@_abc^', silentQueryOf('abc'));
+    doTest('~@abc^', mention('abc'));   doTest('~@_abc^', silentMention('abc'));
+    doTest(' ~@abc^', mention('abc'));  doTest(' ~@_abc^', silentMention('abc'));
+    doTest('(~@abc^', mention('abc'));  doTest('(~@_abc^', silentMention('abc'));
+    doTest('—~@abc^', mention('abc'));  doTest('—~@_abc^', silentMention('abc'));
+    doTest('"~@abc^', mention('abc'));  doTest('"~@_abc^', silentMention('abc'));
+    doTest('“~@abc^', mention('abc'));  doTest('“~@_abc^', silentMention('abc'));
+    doTest('。~@abc^', mention('abc')); doTest('。~@_abc^', silentMention('abc'));
+    doTest('«~@abc^', mention('abc'));  doTest('«~@_abc^', silentMention('abc'));
 
-    doTest('~@ab^c', queryOf('ab')); doTest('~@_ab^c', silentQueryOf('ab'));
-    doTest('~@a^bc', queryOf('a'));  doTest('~@_a^bc', silentQueryOf('a'));
-    doTest('~@^abc', queryOf(''));   doTest('~@_^abc', silentQueryOf(''));
-    doTest('~@^', queryOf(''));      doTest('~@_^', silentQueryOf(''));
+    doTest('~@ab^c', mention('ab')); doTest('~@_ab^c', silentMention('ab'));
+    doTest('~@a^bc', mention('a'));  doTest('~@_a^bc', silentMention('a'));
+    doTest('~@^abc', mention(''));   doTest('~@_^abc', silentMention(''));
+    doTest('~@^', mention(''));      doTest('~@_^', silentMention(''));
 
-    doTest('~@abc ^', queryOf('abc '));  doTest('~@_abc ^', silentQueryOf('abc '));
-    doTest('~@abc^ ^', queryOf('abc ')); doTest('~@_abc^ ^', silentQueryOf('abc '));
-    doTest('~@ab^c ^', queryOf('abc ')); doTest('~@_ab^c ^', silentQueryOf('abc '));
-    doTest('~@^abc ^', queryOf('abc ')); doTest('~@_^abc ^', silentQueryOf('abc '));
+    doTest('~@abc ^', mention('abc '));  doTest('~@_abc ^', silentMention('abc '));
+    doTest('~@abc^ ^', mention('abc ')); doTest('~@_abc^ ^', silentMention('abc '));
+    doTest('~@ab^c ^', mention('abc ')); doTest('~@_ab^c ^', silentMention('abc '));
+    doTest('~@^abc ^', mention('abc ')); doTest('~@_^abc ^', silentMention('abc '));
 
-    doTest('Please ask ~@chris^', queryOf('chris'));             doTest('Please ask ~@_chris^', silentQueryOf('chris'));
-    doTest('Please ask ~@chris bobbe^', queryOf('chris bobbe')); doTest('Please ask ~@_chris bobbe^', silentQueryOf('chris bobbe'));
+    doTest('Please ask ~@chris^', mention('chris'));             doTest('Please ask ~@_chris^', silentMention('chris'));
+    doTest('Please ask ~@chris bobbe^', mention('chris bobbe')); doTest('Please ask ~@_chris bobbe^', silentMention('chris bobbe'));
 
-    doTest('~@Rodion Romanovich Raskolnikov^', queryOf('Rodion Romanovich Raskolnikov'));
-    doTest('~@_Rodion Romanovich Raskolniko^', silentQueryOf('Rodion Romanovich Raskolniko'));
-    doTest('~@Родион Романович Раскольников^', queryOf('Родион Романович Раскольников'));
-    doTest('~@_Родион Романович Раскольнико^', silentQueryOf('Родион Романович Раскольнико'));
+    doTest('~@Rodion Romanovich Raskolnikov^', mention('Rodion Romanovich Raskolnikov'));
+    doTest('~@_Rodion Romanovich Raskolniko^', silentMention('Rodion Romanovich Raskolniko'));
+    doTest('~@Родион Романович Раскольников^', mention('Родион Романович Раскольников'));
+    doTest('~@_Родион Романович Раскольнико^', silentMention('Родион Романович Раскольнико'));
     doTest('If @chris is around, please ask him.^', null); // @ sign is too far away from cursor
     doTest('If @_chris is around, please ask him.^', null); // @ sign is too far away from cursor
+
+    // Emoji (":smile:").
+
+    // Basic positive examples, to contrast with all the negative examples below.
+    doTest('~:^', emoji(''));
+    doTest('~:a^', emoji('a'));
+    doTest('~:a ^', emoji('a '));
+    doTest('~:a_^', emoji('a_'));
+    doTest('~:a b^', emoji('a b'));
+    doTest('ok ~:s^', emoji('s'));
+    doTest('this: ~:s^', emoji('s'));
+
+    doTest('^:', null);
+    doTest('^:abc', null);
+    doTest(':abc', null); // (no cursor)
+
+    // Avoid interpreting colons in normal prose as queries.
+    doTest(': ^', null);
+    doTest(':\n^', null);
+    doTest('this:^', null);
+    doTest('this: ^', null);
+    doTest('là ~:^', emoji('')); // ambiguous in French prose, tant pis
+    doTest('là : ^', null);
+    doTest('8:30^', null);
+
+    // Avoid interpreting already-entered `:foo:` syntax as queries.
+    doTest(':smile:^', null);
+
+    // Avoid interpreting emoticons as queries.
+    doTest(':-^', null);
+    doTest(':)^', null); doTest(':-)^', null);
+    doTest(':(^', null); doTest(':-(^', null);
+    doTest(':/^', null); doTest(':-/^', null);
+    doTest('~:p^', emoji('p')); // ambiguously an emoticon
+    doTest(':-p^', null);
+
+    // Avoid interpreting as queries some ways colons appear in source code.
+    doTest('::^', null);
+    doTest(':<^', null);
+    doTest(':=^', null);
+
+    // Emoji names may have letters and numbers in various scripts.
+    // (A few appear in the server's list of Unicode emoji;
+    // many more might be in a given realm's custom emoji.)
+    doTest('~:コ^', emoji('コ'));
+    doTest('~:空^', emoji('空'));
+    doTest('~:φ^', emoji('φ'));
+    doTest('~:100^', emoji('100'));
+    doTest('~:１^', emoji('１')); // U+FF11 FULLWIDTH DIGIT ONE
+    doTest('~:٢^', emoji('٢')); // U+0662 ARABIC-INDIC DIGIT TWO
+
+    // Emoji names may have dashes '-'.
+    doTest('~:e-m^', emoji('e-m'));
+    doTest('~:jack-o-l^', emoji('jack-o-l'));
+
+    // Just one emoji has a '+' in its name, namely ':+1:'.
+    doTest('~:+^', emoji('+'));
+    doTest('~:+1^', emoji('+1'));
+    doTest(':+2^', null);
+    doTest(':+100^', null);
+    doTest(':+1 ^', null);
+    doTest(':1+1^', null);
+
+    // Accept punctuation before the emoji: opening…
+    doTest('(~:^', emoji('')); doTest('(~:a^', emoji('a'));
+    doTest('[~:^', emoji('')); doTest('[~:a^', emoji('a'));
+    doTest('«~:^', emoji('')); doTest('«~:a^', emoji('a'));
+    doTest('（~:^', emoji('')); doTest('（~:a^', emoji('a'));
+    // … closing…
+    doTest(')~:^', emoji('')); doTest(')~:a^', emoji('a'));
+    doTest(']~:^', emoji('')); doTest(']~:a^', emoji('a'));
+    doTest('»~:^', emoji('')); doTest('»~:a^', emoji('a'));
+    doTest('）~:^', emoji('')); doTest('）~:a^', emoji('a'));
+    // … and other.
+    doTest('.~:^', emoji('')); doTest('.~:a^', emoji('a'));
+    doTest(',~:^', emoji('')); doTest(',~:a^', emoji('a'));
+    doTest('，~:^', emoji('')); doTest('，~:a^', emoji('a'));
+    doTest('。~:^', emoji('')); doTest('。~:a^', emoji('a'));
   });
 
   test('MentionAutocompleteView misc', () async {
     const narrow = ChannelNarrow(1);
     final store = eg.store();
     await store.addUsers([eg.selfUser, eg.otherUser, eg.thirdUser]);
-    final view = MentionAutocompleteView.init(store: store, narrow: narrow);
 
+    final view = MentionAutocompleteView.init(store: store, narrow: narrow,
+      query: MentionAutocompleteQuery('Third'));
     bool done = false;
     view.addListener(() { done = true; });
-    view.query = MentionAutocompleteQuery('Third');
     await Future(() {});
     await Future(() {});
     check(done).isTrue();
@@ -189,16 +271,12 @@ void main() {
   });
 
   test('MentionAutocompleteView not starve timers', () {
-    fakeAsync((binding) async {
+    return awaitFakeAsync((binding) async {
       const narrow = ChannelNarrow(1);
       final store = eg.store();
       await store.addUsers([eg.selfUser, eg.otherUser, eg.thirdUser]);
-      final view = MentionAutocompleteView.init(store: store, narrow: narrow);
 
       bool searchDone = false;
-      view.addListener(() {
-        searchDone = true;
-      });
 
       // Schedule a timer event with zero delay.
       // This stands in for a user interaction, or frame rendering timer,
@@ -210,9 +288,11 @@ void main() {
         check(searchDone).isFalse();
       });
 
-      view.query = MentionAutocompleteQuery('Third');
-      check(timerDone).isFalse();
-      check(searchDone).isFalse();
+      final view = MentionAutocompleteView.init(store: store, narrow: narrow,
+        query: MentionAutocompleteQuery('Third'));
+      view.addListener(() {
+        searchDone = true;
+      });
 
       binding.elapse(const Duration(seconds: 1));
 
@@ -230,11 +310,11 @@ void main() {
     for (int i = 1; i <= 2500; i++) {
       await store.addUser(eg.user(userId: i, email: 'user$i@example.com', fullName: 'User $i'));
     }
-    final view = MentionAutocompleteView.init(store: store, narrow: narrow);
 
     bool done = false;
+    final view = MentionAutocompleteView.init(store: store, narrow: narrow,
+      query: MentionAutocompleteQuery('User 2222'));
     view.addListener(() { done = true; });
-    view.query = MentionAutocompleteQuery('User 2222');
 
     await Future(() {});
     check(done).isFalse();
@@ -253,11 +333,11 @@ void main() {
     for (int i = 1; i <= 1500; i++) {
       await store.addUser(eg.user(userId: i, email: 'user$i@example.com', fullName: 'User $i'));
     }
-    final view = MentionAutocompleteView.init(store: store, narrow: narrow);
 
     bool done = false;
+    final view = MentionAutocompleteView.init(store: store, narrow: narrow,
+      query: MentionAutocompleteQuery('User 1111'));
     view.addListener(() { done = true; });
-    view.query = MentionAutocompleteQuery('User 1111');
 
     await Future(() {});
     check(done).isFalse();
@@ -288,11 +368,11 @@ void main() {
     for (int i = 1; i <= 2500; i++) {
       await store.addUser(eg.user(userId: i, email: 'user$i@example.com', fullName: 'User $i'));
     }
-    final view = MentionAutocompleteView.init(store: store, narrow: narrow);
 
     bool done = false;
+    final view = MentionAutocompleteView.init(store: store, narrow: narrow,
+      query: MentionAutocompleteQuery('User 110'));
     view.addListener(() { done = true; });
-    view.query = MentionAutocompleteQuery('User 110');
 
     await Future(() {});
     check(done).isFalse();
@@ -544,7 +624,8 @@ void main() {
 
     group('ranking across signals', () {
       void checkPrecedes(Narrow narrow, User userA, Iterable<User> usersB) {
-        final view = MentionAutocompleteView.init(store: store, narrow: narrow);
+        final view = MentionAutocompleteView.init(store: store, narrow: narrow,
+          query: MentionAutocompleteQuery(''));
         for (final userB in usersB) {
           check(view.debugCompareUsers(userA, userB)).isLessThan(0);
           check(view.debugCompareUsers(userB, userA)).isGreaterThan(0);
@@ -552,7 +633,8 @@ void main() {
       }
 
       void checkRankEqual(Narrow narrow, List<User> users) {
-        final view = MentionAutocompleteView.init(store: store, narrow: narrow);
+        final view = MentionAutocompleteView.init(store: store, narrow: narrow,
+          query: MentionAutocompleteQuery(''));
         for (int i = 0; i < users.length; i++) {
           for (int j = i + 1; j < users.length; j++) {
             check(view.debugCompareUsers(users[i], users[j])).equals(0);
@@ -669,21 +751,24 @@ void main() {
       test('CombinedFeedNarrow gives error', () async {
         await prepare(users: [eg.user(), eg.user()], messages: []);
         const narrow = CombinedFeedNarrow();
-        check(() => MentionAutocompleteView.init(store: store, narrow: narrow))
+        check(() => MentionAutocompleteView.init(store: store, narrow: narrow,
+                      query: MentionAutocompleteQuery('')))
           .throws<AssertionError>();
       });
 
       test('MentionsNarrow gives error', () async {
         await prepare(users: [eg.user(), eg.user()], messages: []);
         const narrow = MentionsNarrow();
-        check(() => MentionAutocompleteView.init(store: store, narrow: narrow))
+        check(() => MentionAutocompleteView.init(store: store, narrow: narrow,
+                      query: MentionAutocompleteQuery('')))
           .throws<AssertionError>();
       });
 
       test('StarredMessagesNarrow gives error', () async {
         await prepare(users: [eg.user(), eg.user()], messages: []);
         const narrow = StarredMessagesNarrow();
-        check(() => MentionAutocompleteView.init(store: store, narrow: narrow))
+        check(() => MentionAutocompleteView.init(store: store, narrow: narrow,
+                      query: MentionAutocompleteQuery('')))
           .throws<AssertionError>();
       });
     });
@@ -692,9 +777,9 @@ void main() {
       Future<Iterable<int>> getResults(
           Narrow narrow, MentionAutocompleteQuery query) async {
         bool done = false;
-        final view = MentionAutocompleteView.init(store: store, narrow: narrow);
+        final view = MentionAutocompleteView.init(store: store, narrow: narrow,
+          query: query);
         view.addListener(() { done = true; });
-        view.query = query;
         await Future(() {});
         check(done).isTrue();
         final results = view.results
@@ -777,13 +862,14 @@ void main() {
     final third = eg.getStreamTopicsEntry(maxId: 3, name: 'Third Topic');
     connection.prepare(json: GetStreamTopicsResult(
       topics: [first, second, third]).toJson());
+
     final view = TopicAutocompleteView.init(
       store: store,
-      streamId: eg.stream().streamId);
-
+      streamId: eg.stream().streamId,
+      query: TopicAutocompleteQuery('Third'));
     bool done = false;
     view.addListener(() { done = true; });
-    view.query = TopicAutocompleteQuery('Third');
+
     // those are here to wait for topics to be loaded
     await Future(() {});
     await Future(() {});
@@ -802,11 +888,10 @@ void main() {
 
     final view = TopicAutocompleteView.init(
       store: store,
-      streamId: eg.stream().streamId);
-
+      streamId: eg.stream().streamId,
+      query: TopicAutocompleteQuery('te'));
     bool done = false;
     view.addListener(() { done = true; });
-    view.query = TopicAutocompleteQuery('te');
 
     check(done).isFalse();
     await Future(() {});
