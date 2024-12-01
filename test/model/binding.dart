@@ -483,6 +483,7 @@ class FakeFirebaseMessaging extends Fake implements FirebaseMessaging {
       case TargetPlatform.fuchsia:
         return null;
     }
+    return null;
   }
 
   ////////////////////////////////
